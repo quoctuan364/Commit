@@ -1,1 +1,1 @@
-Meow 5
+Meow
