@@ -1,29 +1,46 @@
-name: Daily README Auto-Update
+name: Random Daily README Auto-Update
 
 on:
   schedule:
-    # Runs every day at 00:00 UTC
-    - cron: '0 0 * * *'
-  workflow_dispatch: # Allows you to trigger it manually for testing
+    # Triggers every single hour on the hour
+    - cron: '0 * * * *'
+  workflow_dispatch: # Allows you to still trigger it manually whenever you want
 
 jobs:
-  update-readme:
+  random-update:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Overwrite README content
+      - name: Roll the dice (Random Gatekeeper)
+        id: dice-roll
         run: |
-          echo "# Daily Update" > README.md
-          echo "Last updated on: $(date -u +'%Y-%m-%d %H:%M:%S') UTC" >> README.md
+          # Generates a number between 1 and 100
+          ROLL=$((1 + RANDOM % 100))
+          echo "Rolled a $ROLL"
+          
+          # 30% chance to pass. If higher than 30, stop the workflow early.
+          if [ $ROLL -gt 30 ]; then
+            echo "Result: Skip this hour to keep daily total random."
+            echo "should_run=false" >> $GITHUB_OUTPUT
+          else
+            echo "Result: Lucky roll! Proceeding with README update."
+            echo "should_run=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Overwrite README content with Date and Time
+        if: steps.dice-roll.outputs.should_run == 'true'
+        run: |
+          echo "# Random Periodic Update" > README.md
+          echo "Last updated on: $(date -u +'%Y-%m-%d %T') UTC" >> README.md
 
       - name: Commit and Push changes
+        if: steps.dice-roll.outputs.should_run == 'true'
         run: |
           git config --global user.name "${{ github.actor }}"
           git config --global user.email "${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com"
           
           git add README.md
-          # Only commit if there are actual changes to avoid workflow errors
-          git diff-index --quiet HEAD || git commit -m "docs: auto-update README to current day"
+          git diff-index --quiet HEAD || git commit -m "docs: random auto-update README"
           git push
