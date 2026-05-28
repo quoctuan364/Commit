@@ -1,0 +1,33 @@
+name: Daily README Pull Request
+
+on:
+  schedule:
+    # Runs every day at 00:00 UTC
+    - cron: '0 0 * * *'
+  workflow_dispatch: # Allows manual trigger
+
+jobs:
+  create-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Overwrite README content
+        run: |
+          echo "# Daily Update" > README.md
+          echo "Last updated on: $(date -u +'%Y-%m-%d %H:%M:%S') UTC" >> README.md
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "docs: update README date"
+          committer: "${{ github.actor }} <${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com>"
+          author: "${{ github.actor }} <${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com>"
+          branch: update-readme-date
+          delete-branch: true
+          title: "📅 Daily Update: README.md"
+          body: |
+            This is an automated PR to update the README file with the current day's timestamp.
+            Please review and approve.
