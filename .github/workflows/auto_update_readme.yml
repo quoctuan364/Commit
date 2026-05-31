@@ -1,81 +1,50 @@
-name: Guaranteed Dynamic Daily Updates
+name: Randomly Twice a Day README Update
 
 on:
   schedule:
-    - cron: '0 * * * *' # Runs every hour
-  workflow_dispatch:
-
-env:
-  # This silences the deprecation warning and forces the actions to run on Node 24
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
-  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    # Runs twice a day: at 00:00 and 12:00 UTC
+    - cron: '0 0,12 * * *'
+  workflow_dispatch: # Allows manual testing
 
 jobs:
-  random-update:
+  update-readme:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Calculate and verify dynamic targets
+      - name: Deciding to commit
         id: gatekeeper
         run: |
-          # Fetch yesterday's total and today's current progress from GitHub memory
-          YESTERDAY_TOTAL=$(gh api repos/${{ github.repository }}/actions/variables/YESTERDAY_TOTAL --jq '.value' 2>/dev/null || echo "0")
-          TODAY_COUNT=$(gh api repos/${{ github.repository }}/actions/variables/TODAY_COUNT --jq '.value' 2>/dev/null || echo "0")
-          CURRENT_HOUR=$(date -u +'%H')
+          # Get the current hour in UTC to know which run this is
+          HOUR=$(date -u +"%H")
           
-          echo "Yesterday's total commits: $YESTERDAY_TOTAL"
-          echo "Today's current commit count: $TODAY_COUNT"
-          
-          # 1. Reset counters at the first hour of the day
-          if [ "$CURRENT_HOUR" -eq "00" ]; then
-            TODAY_COUNT=0
-            gh api --method PATCH repos/${{ github.repository }}/actions/variables/TODAY_COUNT -f value="0"
-          fi
-          
-          # 2. Base 30% chance to roll a commit
-          ROLL=$((1 + RANDOM % 100))
-          SHOULD_COMMIT="false"
-          
-          if [ $ROLL -le 30 ] && [ "$TODAY_COUNT" -lt 10 ]; then
-            SHOULD_COMMIT="true"
-          fi
-          
-          # 3. Strict End-of-Day Tie Breaker (At 11 PM UTC)
-          if [ "$CURRENT_HOUR" -eq "23" ] && [ "$TODAY_COUNT" -eq "$YESTERDAY_TOTAL" ]; then
-            if [ "$TODAY_COUNT" -le 5 ]; then
-              SHOULD_COMMIT="true"
+          if [ "$HOUR" -eq "00" ]; then
+            echo "should_run=true" >> $GITHUB_OUTPUT
+            echo "☀️ First run of the day: Always executing."
+          else
+            # 50/50 chance for the second run (0 or 1)
+            ROLL=$((RANDOM % 2))
+            if [ $ROLL -eq 0 ]; then
+              echo "should_run=true" >> $GITHUB_OUTPUT
+              echo "🎲 Second run rolled SUCCESS: Executing."
             else
-              SHOULD_COMMIT="false"
+              echo "should_run=false" >> $GITHUB_OUTPUT
+              echo "💤 Second run rolled SKIP: Skipping this commit."
             fi
           fi
-          
-          # 4. Save progress if we are committing
-          if [ "$SHOULD_COMMIT" == "true" ]; then
-            NEW_COUNT=$((TODAY_COUNT + 1))
-            gh api --method PATCH repos/${{ github.repository }}/actions/variables/TODAY_COUNT -f value="$NEW_COUNT"
-            echo "Proceeding with commit. New daily count will be: $NEW_COUNT"
-          else
-            echo "Skipping commit this hour."
-          fi
-          
-          # 5. Lock in the final score at midnight
-          if [ "$CURRENT_HOUR" -eq "23" ]; then
-            FINAL_COUNT=$([ "$SHOULD_COMMIT" == "true" ] && echo $((TODAY_COUNT + 1)) || echo $TODAY_COUNT)
-            gh api --method PATCH repos/${{ github.repository }}/actions/variables/YESTERDAY_TOTAL -f value="$FINAL_COUNT"
-          fi
-          
-          echo "should_run=$SHOULD_COMMIT" >> $GITHUB_OUTPUT
 
       - name: Overwrite README content with Date and Time
-        if: steps.gatekeeper.outputs.should_run == 'true'
+        if: steps.gatekeeper.outputs.should_run == 'true' || github.event_name == 'workflow_dispatch'
         run: |
           echo "# Dynamically Varied Update" > README.md
           echo "Last updated on: $(date -u +'%Y-%m-%d %T') UTC" >> README.md
 
       - name: Commit and Push changes
-        if: steps.gatekeeper.outputs.should_run == 'true'
+        if: steps.gatekeeper.outputs.should_run == 'true' || github.event_name == 'workflow_dispatch'
         run: |
           git config --global user.name "${{ github.actor }}"
           git config --global user.email "${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com"
