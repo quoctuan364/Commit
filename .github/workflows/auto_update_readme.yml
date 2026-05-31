@@ -1,11 +1,12 @@
-name: Guaranteed Dynamic Daily Updates (Min 5 - Max 10)
+name: Guaranteed Dynamic Daily Updates
 
 on:
   schedule:
-    - cron: '0 * * * *' # Scheduled hourly (will run as often as GitHub allows)
+    - cron: '0 * * * *' # Runs every hour
   workflow_dispatch:
 
 env:
+  # This silences the deprecation warning and forces the actions to run on Node 24
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -16,85 +17,53 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Dynamic Pacing and Tie-Breaker Engine
+      - name: Calculate and verify dynamic targets
         id: gatekeeper
         run: |
-          # Fetch repository variables
+          # Fetch yesterday's total and today's current progress from GitHub memory
           YESTERDAY_TOTAL=$(gh api repos/${{ github.repository }}/actions/variables/YESTERDAY_TOTAL --jq '.value' 2>/dev/null || echo "0")
           TODAY_COUNT=$(gh api repos/${{ github.repository }}/actions/variables/TODAY_COUNT --jq '.value' 2>/dev/null || echo "0")
+          CURRENT_HOUR=$(date -u +'%H')
           
-          # Convert current UTC hour to an integer (0 to 23)
-          CURRENT_HOUR=$(date -u +'%1H')
-          [ -z "$CURRENT_HOUR" ] && CURRENT_HOUR=0
-          HOURS_LEFT=$((23 - CURRENT_HOUR))
+          echo "Yesterday's total commits: $YESTERDAY_TOTAL"
+          echo "Today's current commit count: $TODAY_COUNT"
           
-          echo "Time check: Current hour is $CURRENT_HOUR UTC. Hours remaining in day: $HOURS_LEFT"
-          echo "History check: Yesterday's total = $YESTERDAY_TOTAL | Today's current count = $TODAY_COUNT"
-          
-          # 1. Midnight Reset
-          if [ "$CURRENT_HOUR" -eq 0 ]; then
+          # 1. Reset counters at the first hour of the day
+          if [ "$CURRENT_HOUR" -eq "00" ]; then
             TODAY_COUNT=0
             gh api --method PATCH repos/${{ github.repository }}/actions/variables/TODAY_COUNT -f value="0"
           fi
           
+          # 2. Base 30% chance to roll a commit
+          ROLL=$((1 + RANDOM % 100))
           SHOULD_COMMIT="false"
-          MIN_TARGET=5
-          MAX_TARGET=10
           
-          # 2. Pacing Logic to GUARANTEE at least 5 commits
-          # If the number of hours left matches or is less than the commits we still need, FORCE IT.
-          COMMITS_NEEDED=$((MIN_TARGET - TODAY_COUNT))
-          if [ $COMMITS_NEEDED -gt 0 ] && [ $HOURS_LEFT -le $COMMITS_NEEDED ]; then
-            echo "Pacing Trigger: Forcing commit to guarantee the minimum target of $MIN_TARGET."
+          if [ $ROLL -le 30 ] && [ "$TODAY_COUNT" -lt 10 ]; then
             SHOULD_COMMIT="true"
+          fi
           
-          # 3. Random Logic if we haven't reached the absolute cap of 10
-          elif [ $TODAY_COUNT -l t $MAX_TARGET ]; then
-            ROLL=$((1 + RANDOM % 100))
-            # Higher base chance (40%) to offset missed GitHub schedules
-            if [ $ROLL -le 40 ]; then
-              echo "Random Trigger: Lucky roll ($ROLL <= 40)!"
+          # 3. Strict End-of-Day Tie Breaker (At 11 PM UTC)
+          if [ "$CURRENT_HOUR" -eq "23" ] && [ "$TODAY_COUNT" -eq "$YESTERDAY_TOTAL" ]; then
+            if [ "$TODAY_COUNT" -le 5 ]; then
               SHOULD_COMMIT="true"
-            fi
-          fi
-          
-          # 4. End-of-Day Strict Tie-Breaker (At 11 PM UTC / Hour 23)
-          # If this is the final hour and today's total equals yesterday's, force a divergence
-          FUTURE_TOTAL=$TODAY_COUNT
-          if [ "$SHOULD_COMMIT" == "true" ]; then
-            FUTURE_TOTAL=$((TODAY_COUNT + 1))
-          fi
-          
-          if [ "$CURRENT_HOUR" -eq 23 ] && [ $FUTURE_TOTAL -eq $YESTERDAY_TOTAL ]; then
-            echo "Tie-Breaker Trigger: Today's projected total matches yesterday ($YESTERDAY_TOTAL). Adjusting..."
-            if [ $FUTURE_TOTAL -eq $TODAY_COUNT ]; then
-              # It was false, force it true to increment total
-              if [ $FUTURE_TOTAL -lt $MAX_TARGET ]; then
-                SHOULD_COMMIT="true"
-                FUTURE_TOTAL=$((FUTURE_TOTAL + 1))
-              fi
             else
-              # It was true, force it false to prevent incrementing
-              if [ $FUTURE_TOTAL -gt $MIN_TARGET ]; then
-                SHOULD_COMMIT="false"
-                FUTURE_TOTAL=$TODAY_COUNT
-              fi
+              SHOULD_COMMIT="false"
             fi
           fi
           
-          # 5. Execution & Variable Updates
+          # 4. Save progress if we are committing
           if [ "$SHOULD_COMMIT" == "true" ]; then
             NEW_COUNT=$((TODAY_COUNT + 1))
             gh api --method PATCH repos/${{ github.repository }}/actions/variables/TODAY_COUNT -f value="$NEW_COUNT"
-            echo "Decision: Commit APPROVED. New count for today will be: $NEW_COUNT"
+            echo "Proceeding with commit. New daily count will be: $NEW_COUNT"
           else
-            echo "Decision: Commit SKIPPED this hour."
+            echo "Skipping commit this hour."
           fi
           
-          # Lock yesterday's total variable when ending the day
-          if [ "$CURRENT_HOUR" -eq 23 ]; then
-            gh api --method PATCH repos/${{ github.repository }}/actions/variables/YESTERDAY_TOTAL -f value="$FUTURE_TOTAL"
-            echo "Day ended. Saving final score ($FUTURE_TOTAL) into YESTERDAY_TOTAL."
+          # 5. Lock in the final score at midnight
+          if [ "$CURRENT_HOUR" -eq "23" ]; then
+            FINAL_COUNT=$([ "$SHOULD_COMMIT" == "true" ] && echo $((TODAY_COUNT + 1)) || echo $TODAY_COUNT)
+            gh api --method PATCH repos/${{ github.repository }}/actions/variables/YESTERDAY_TOTAL -f value="$FINAL_COUNT"
           fi
           
           echo "should_run=$SHOULD_COMMIT" >> $GITHUB_OUTPUT
